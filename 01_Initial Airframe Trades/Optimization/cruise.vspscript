@@ -1,7 +1,7 @@
 void main()
 {
     ClearVSPModel();
-    ReadVSPFile("baseline.vsp3");     // use your actual filename
+    ReadVSPFile("current.vsp3");     // use your actual filename
 
 // --- VSPAEROComputeGeometry: Thick surfaces (fuselage + wings) ---
 string compGeom = "VSPAEROComputeGeometry";
@@ -19,14 +19,15 @@ string compGeom_results = ExecAnalysis(compGeom);
 
     // --- VSPAEROSweep: AoA 2,4,6,8,10 ---
 string myAnalysis = "VSPAEROSweep";
-SetAnalysisInputDefaults(myAnalysis);
+SetIntAnalysisInput(myAnalysis, "RefFlag", array<int>(1,1)); // 1 = AUTO
+
 
 // Alpha sweep 2–10 deg
 array<double> AlphaStart(1, 2.0);
 SetDoubleAnalysisInput(myAnalysis, "AlphaStart", AlphaStart);
 array<double> AlphaEnd(1, 10.0);
 SetDoubleAnalysisInput(myAnalysis, "AlphaEnd", AlphaEnd);
-array<int> AlphaNpts(1, 9);
+array<int> AlphaNpts(1, 5);
 SetIntAnalysisInput(myAnalysis, "AlphaNpts", AlphaNpts);
 
 // Wake iterations = 15
