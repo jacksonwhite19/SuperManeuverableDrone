@@ -1,0 +1,52 @@
+void main()
+{
+    ClearVSPModel();
+    ReadVSPFile("baseline.vsp3");     // use your actual filename
+
+// --- VSPAEROComputeGeometry: Thick surfaces (fuselage + wings) ---
+string compGeom = "VSPAEROComputeGeometry";
+SetAnalysisInputDefaults(compGeom);
+
+// Use ALL geometry (thick fuselage + wings)
+array<int> ThickSet(1, 0);     // GeomSet = 0 → All thick surfaces
+SetIntAnalysisInput(compGeom, "GeomSet", ThickSet);
+
+array<int> ThinSet(1, -1);     // Disable thin surfaces
+SetIntAnalysisInput(compGeom, "ThinGeomSet", ThinSet);
+
+string compGeom_results = ExecAnalysis(compGeom);
+
+
+    // --- VSPAEROSweep: AoA 2,4,6,8,10 ---
+string myAnalysis = "VSPAEROSweep";
+SetAnalysisInputDefaults(myAnalysis);
+
+// Alpha sweep 2–10 deg
+array<double> AlphaStart(1, 2.0);
+SetDoubleAnalysisInput(myAnalysis, "AlphaStart", AlphaStart);
+array<double> AlphaEnd(1, 10.0);
+SetDoubleAnalysisInput(myAnalysis, "AlphaEnd", AlphaEnd);
+array<int> AlphaNpts(1, 9);
+SetIntAnalysisInput(myAnalysis, "AlphaNpts", AlphaNpts);
+
+// Wake iterations = 15
+array<int> WakeIter(1, 15);
+SetIntAnalysisInput(myAnalysis, "WakeNumIter", WakeIter);
+
+// Use 14 cores
+array<int> NumCPU(1, 14);
+SetIntAnalysisInput(myAnalysis, "NCPU", NumCPU);
+
+string allResults = ExecAnalysis(myAnalysis);
+WriteResultsCSVFile(allResults, "Results.csv");
+
+
+    // Simple confirmation print
+    Print("VSPAEROSweep complete, wrote Results.csv");
+
+    while (GetNumTotalErrors() > 0)
+    {
+        ErrorObj err = PopLastError();
+        Print(err.GetErrorString());
+    }
+}
