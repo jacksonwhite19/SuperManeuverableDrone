@@ -1,7 +1,6 @@
 import subprocess
 import time
 import os
-import csv
 import numpy as np
 from scipy.optimize import differential_evolution
 
@@ -22,7 +21,7 @@ with open(LOG_CSV, "w") as f:
     f.write(
         "iter,elapsed_s,elapsed_min,"
         "span_mm,sweep_deg,xloc_mm,taper,tip_mm,ctrl_frac,"
-        "max_L_over_D,best_L_over_D,L_over_D_all\n"
+        "mean_L_over_D,best_mean_L_over_D,alpha_at_peak,L_over_D_all\n"
     )
 
 # --- DES template -------------------------------------------------------
@@ -48,15 +47,13 @@ def write_des_from_x(x, des_path="current.des"):
     with open(des_path, "w") as f:
         f.write(f"{NUM_DES_VARS}\n")
         f.write(DES_TEMPLATE.format(
-            span=span, sweep=sweep, xloc=xloc, taper=taper, tip=tip, ctrl=ctrl
+            span=span, sweep=sweep, xloc=xloc,
+            taper=taper, tip=tip, ctrl=ctrl
         ))
 
 # --- Update geometry ----------------------------------------------------
 def update_geometry_from_x(x):
-    start = time.time()
     write_des_from_x(x, "current.des")
-    elapsed = time.time() - start
-    # print(f"Geometry written in {elapsed:.2f}s")
     subprocess.run(
         [VSP_EXE, "-script", "update_geom.vspscript"],
         check=True,
@@ -78,50 +75,74 @@ def run_vspaero():
     elapsed = time.time() - start
     print(f"VSPAERO run completed in {elapsed:.2f}s")
 
-    if result.stdout:
-        last_lines = "\n".join(result.stdout.strip().splitlines()[-3:])
-        print("VSPAERO stdout (last 3 lines):")
-        print(last_lines)
-    if result.stderr:
-        print("VSPAERO stderr:")
-        print(result.stderr)
-
     if not os.path.exists(RESULTS_CSV) or os.path.getsize(RESULTS_CSV) == 0:
         raise RuntimeError("VSPAERO did not produce a valid Results.csv")
 
 # --- Extract L/D --------------------------------------------------------
 def extract_ld_all(results_path: str):
-    """Returns max L/D, index of max, L/D array, alpha array."""
-    rows = []
-    with open(results_path, newline="") as f:
-        reader = csv.reader(f)
-        for r in reader:
-            rows.append(r)
+    """
+    Returns:
+        obj_ld     : scalar objective (best contiguous-band mean L/D)
+        best_alpha : center alpha of best band (for reporting)
+        ld         : full L/D array
+        alphas     : alpha array
+    """
 
-    # Find row indices by header names
-    def find_row(label):
-        for i, r in enumerate(rows):
-            if len(r) > 0 and r[0].strip() == label:
-                return i
-        raise RuntimeError(f"Row with label '{label}' not found in CSV")
+    # Fixed alpha sweep
+    alphas = np.array([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20])
 
-    alpha_row = find_row("Alpha")
-    cl_row = find_row("CLtot")
-    cd_row = find_row("CDtot")
+    # --- Read CSV ---
+    with open(results_path, "r") as f:
+        rows = [line.strip().split(",") for line in f if line.strip()]
 
-    # Convert strings to floats, skip first column
-    alphas = np.array([float(a) for a in rows[alpha_row][1:] if a.strip() != ''])
-    cl = np.array([float(a) for a in rows[cl_row][1:] if a.strip() != ''])
-    cd = np.array([float(a) for a in rows[cd_row][1:] if a.strip() != ''])
-    ld = cl / cd
+    # --- Locate L/D row ---
+    ld_row = None
+    for row in rows:
+        if row[0].strip() == "L_D":
+            ld_row = row
+            break
 
-    max_ld_idx = ld.argmax()
-    max_ld = ld[max_ld_idx]
-    best_alpha = alphas[max_ld_idx]
+    if ld_row is None:
+        return -1e6, None, None, alphas
 
-    return max_ld, best_alpha, ld, alphas
+    # --- Parse & fix sign ---
+    ld = np.array([float(x) for x in ld_row[1:1 + len(alphas)]])
+    ld = -ld  # VSPAERO convention
 
-# --- Objective function -----------------------------------------------
+    # --- Valid alpha range ---
+    valid_mask = (alphas >= 4) & (alphas <= 14)
+    alphas_v = alphas[valid_mask]
+    ld_v = ld[valid_mask]
+
+    # --- Hard sanity checks ---
+    if (
+        len(ld_v) < 5 or
+        np.any(~np.isfinite(ld_v)) or
+        np.any(ld_v < 0.0) or
+        np.any(ld_v > 30.0)
+    ):
+        return -1e6, None, ld, alphas
+
+    # --- Best contiguous band metric ---
+    WINDOW = 6  # e.g. 3 points = 4° wide
+    best_score = -np.inf
+    best_idx = None
+
+    for i in range(len(ld_v) - WINDOW + 1):
+        band = ld_v[i:i + WINDOW]
+        score = band.mean()
+
+        if score > best_score:
+            best_score = score
+            best_idx = i
+
+    # Representative alpha = center of band
+    center_alpha = alphas_v[best_idx + WINDOW // 2]
+
+    return best_score, center_alpha, ld, alphas
+
+
+# --- Objective function ------------------------------------------------
 def evaluate_design(x):
     global eval_counter, best_ld_so_far, best_x_so_far, prev_ld
 
@@ -131,50 +152,61 @@ def evaluate_design(x):
     elapsed_min = elapsed_s / 60.0
     prev_str = "N/A" if prev_ld is None else f"{prev_ld:.6f}"
 
+    # --- Trailing edge constraint ---
+    sweep_rad = np.radians(sweep)
+    trailing_edge_x = xloc + np.sin(sweep_rad) * span + tip
+    if trailing_edge_x > 630.0:
+        print(f"Constraint violated: trailing_edge_x = {trailing_edge_x:.2f} > 630 mm")
+        return 1e6
+
     print(f"\n--- Iteration {eval_counter} ---")
     print(
         f"t = {elapsed_s:6.1f}s ({elapsed_min:4.1f} min) | "
-        f"prev L/D = {prev_str}, best = {best_ld_so_far:.6f}\n"
-        f"Design: span={span:.1f} mm, sweep={sweep:.1f} deg, xloc={xloc:.1f} mm, "
-        f"taper={taper:.3f}, tip={tip:.1f} mm, ctrl={ctrl:.3f}"
+        f"prev mean L/D = {prev_str}, best = {best_ld_so_far:.6f}\n"
+        f"Design: span={span:.1f} mm, sweep={sweep:.1f} deg, "
+        f"xloc={xloc:.1f} mm, taper={taper:.3f}, "
+        f"tip={tip:.1f} mm, ctrl={ctrl:.3f}"
     )
 
     update_geometry_from_x(x)
     run_vspaero()
 
-    max_ld, best_alpha, ld_arr, alphas = extract_ld_all(RESULTS_CSV)
-    prev_ld = max_ld
+    obj_ld, best_alpha, ld_arr, alphas = extract_ld_all(RESULTS_CSV)
+    prev_ld = obj_ld
 
-    if max_ld > best_ld_so_far:
-        best_ld_so_far = max_ld
+    if obj_ld > best_ld_so_far:
+        best_ld_so_far = obj_ld
         best_x_so_far = x.copy()
 
-    print(f"Result: max L/D = {max_ld:.6f} at alpha = {best_alpha:.2f} deg; best so far = {best_ld_so_far:.6f}")
+    print(
+        f"Result: mean L/D (4–14°) = {obj_ld:.6f}, "
+        f"peak at alpha = {best_alpha:.2f} deg; "
+        f"best so far = {best_ld_so_far:.6f}"
+    )
 
-    # --- Log L/D at all alphas as semicolon-separated string
     ld_str = ";".join(f"{v:.6f}" for v in ld_arr)
 
-    # --- Write to CSV ---
     with open(LOG_CSV, "a") as f:
         f.write(
             f"{eval_counter},{elapsed_s:.2f},{elapsed_min:.3f},"
             f"{span:.3f},{sweep:.3f},{xloc:.3f},{taper:.5f},"
             f"{tip:.3f},{ctrl:.5f},"
-            f"{max_ld:.6f},{best_ld_so_far:.6f},{ld_str}\n"
+            f"{obj_ld:.6f},{best_ld_so_far:.6f},{best_alpha:.2f},{ld_str}\n"
         )
 
-    return -max_ld  # minimize negative L/D
+    return -obj_ld  # DE minimizes
 
 # --- Driver ------------------------------------------------------------
 if __name__ == "__main__":
-    baseline = [400.0, 25.0, 320.0, 0.833333, 125.0, 0.28]
+    baseline = [400.0, 25.0, 320.0, 0.833333, 125.0, 0.22]
+
     bounds = [
         (275.0, 650.0),  # span
         (0.0, 45.0),     # sweep
-        (230.0, 340.0),  # xloc
+        (220.0, 340.0),  # xloc
         (0.5, 1.0),      # taper
-        (120.0, 130.0),  # tip chord
-        (0.22, 0.38),    # control chord fraction
+        (120.0, 125.0),  # tip chord
+        (0.22, 0.22),    # control chord fraction
     ]
 
     print("Baseline evaluation:")
@@ -197,5 +229,5 @@ if __name__ == "__main__":
     print(f"Total evaluations: {eval_counter}")
     print(f"Total time: {total_s:.1f}s ({total_min:.2f} min)")
     print("Best design vector x* =", result.x)
-    print("Best max L/D =", -result.fun)
+    print("Best mean L/D =", -result.fun)
     print("Best found during run =", best_ld_so_far, "at x =", best_x_so_far)

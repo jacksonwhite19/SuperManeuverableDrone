@@ -23,11 +23,11 @@ SetIntAnalysisInput(myAnalysis, "RefFlag", array<int>(1,1)); // 1 = AUTO
 
 
 // Alpha sweep 2–10 deg
-array<double> AlphaStart(1, 2.0);
+array<double> AlphaStart(1, 0);
 SetDoubleAnalysisInput(myAnalysis, "AlphaStart", AlphaStart);
-array<double> AlphaEnd(1, 10.0);
+array<double> AlphaEnd(1, 20);
 SetDoubleAnalysisInput(myAnalysis, "AlphaEnd", AlphaEnd);
-array<int> AlphaNpts(1, 5);
+array<int> AlphaNpts(1, 11);
 SetIntAnalysisInput(myAnalysis, "AlphaNpts", AlphaNpts);
 
 // Wake iterations = 15
