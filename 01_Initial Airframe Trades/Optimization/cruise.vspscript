@@ -3,44 +3,41 @@ void main()
     ClearVSPModel();
     ReadVSPFile("current.vsp3");     // use your actual filename
 
-// --- VSPAEROComputeGeometry: Thick surfaces (fuselage + wings) ---
-string compGeom = "VSPAEROComputeGeometry";
-SetAnalysisInputDefaults(compGeom);
+    // --- VSPAEROComputeGeometry: Thick surfaces (fuselage + wings) ---
+    string compGeom = "VSPAEROComputeGeometry";
+    SetAnalysisInputDefaults(compGeom);
 
-// Use ALL geometry (thick fuselage + wings)
-array<int> ThickSet(1, 0);     // GeomSet = 0 → All thick surfaces
-SetIntAnalysisInput(compGeom, "GeomSet", ThickSet);
+    // Use ALL geometry (thick fuselage + wings)
+    array<int> ThickSet(1, 0);     // GeomSet = 0 → All thick surfaces
+    SetIntAnalysisInput(compGeom, "GeomSet", ThickSet);
 
-array<int> ThinSet(1, -1);     // Disable thin surfaces
-SetIntAnalysisInput(compGeom, "ThinGeomSet", ThinSet);
+    array<int> ThinSet(1, -1);     // Disable thin surfaces
+    SetIntAnalysisInput(compGeom, "ThinGeomSet", ThinSet);
 
-string compGeom_results = ExecAnalysis(compGeom);
+    string compGeom_results = ExecAnalysis(compGeom);
 
+    // --- VSPAEROSweep: AoA 2–16 deg ---
+    string myAnalysis = "VSPAEROSweep";
+    SetIntAnalysisInput(myAnalysis, "RefFlag", array<int>(1,1)); // 1 = AUTO
 
-    // --- VSPAEROSweep: AoA 2,4,6,8,10 ---
-string myAnalysis = "VSPAEROSweep";
-SetIntAnalysisInput(myAnalysis, "RefFlag", array<int>(1,1)); // 1 = AUTO
+    // Alpha sweep 2–16 deg
+    array<double> AlphaStart(1, 2);
+    SetDoubleAnalysisInput(myAnalysis, "AlphaStart", AlphaStart);
+    array<double> AlphaEnd(1, 16);
+    SetDoubleAnalysisInput(myAnalysis, "AlphaEnd", AlphaEnd);
+    array<int> AlphaNpts(1, 15);   // 2,4,6,8,10,12,14,16 → 8 points
+    SetIntAnalysisInput(myAnalysis, "AlphaNpts", AlphaNpts);
 
+    // Wake iterations = 15
+    array<int> WakeIter(1, 15);
+    SetIntAnalysisInput(myAnalysis, "WakeNumIter", WakeIter);
 
-// Alpha sweep 2–10 deg
-array<double> AlphaStart(1, 0);
-SetDoubleAnalysisInput(myAnalysis, "AlphaStart", AlphaStart);
-array<double> AlphaEnd(1, 20);
-SetDoubleAnalysisInput(myAnalysis, "AlphaEnd", AlphaEnd);
-array<int> AlphaNpts(1, 11);
-SetIntAnalysisInput(myAnalysis, "AlphaNpts", AlphaNpts);
+    // Use 14 cores
+    array<int> NumCPU(1, 16);
+    SetIntAnalysisInput(myAnalysis, "NCPU", NumCPU);
 
-// Wake iterations = 15
-array<int> WakeIter(1, 15);
-SetIntAnalysisInput(myAnalysis, "WakeNumIter", WakeIter);
-
-// Use 14 cores
-array<int> NumCPU(1, 14);
-SetIntAnalysisInput(myAnalysis, "NCPU", NumCPU);
-
-string allResults = ExecAnalysis(myAnalysis);
-WriteResultsCSVFile(allResults, "Results.csv");
-
+    string allResults = ExecAnalysis(myAnalysis);
+    WriteResultsCSVFile(allResults, "Results.csv");
 
     // Simple confirmation print
     Print("VSPAEROSweep complete, wrote Results.csv");
