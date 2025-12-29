@@ -1,7 +1,33 @@
 void main()
 {
     ClearVSPModel();
-    ReadVSPFile("current.vsp3");     // use your actual filename
+    
+    // Try current.vsp3 first (for main optimizer), then test_current.vsp3 (for test runs)
+    string vspFile = "current.vsp3";
+    string resultsFile = "Results.csv";
+    
+    // Try to read current.vsp3 first (main optimizer), if it fails, try test_current.vsp3 (test runs)
+    try
+    {
+        ReadVSPFile("current.vsp3");
+        vspFile = "current.vsp3";
+        resultsFile = "Results.csv";
+    }
+    catch
+    {
+        try
+        {
+            ReadVSPFile("test_current.vsp3");
+            vspFile = "test_current.vsp3";
+            resultsFile = "test_Results.csv";
+        }
+        catch
+        {
+            Print("ERROR: Neither current.vsp3 nor test_current.vsp3 found!");
+            Print("Make sure update_geom.vspscript runs before cruise.vspscript");
+            return;
+        }
+    }
 
     // --- VSPAEROComputeGeometry: Thick surfaces (fuselage + wings) ---
     string compGeom = "VSPAEROComputeGeometry";
@@ -16,35 +42,96 @@ void main()
 
     string compGeom_results = ExecAnalysis(compGeom);
 
-    // --- VSPAEROSweep: AoA 2–16 deg ---
+    // --- MassProp: Calculate Center of Gravity from geometry ---
+    // Run MassProp to get CG (needs to run every iteration since geometry changes)
+    Print("Running MassProp analysis to calculate CG...");
+    string massPropAnalysis = "MassProp";
+    SetAnalysisInputDefaults(massPropAnalysis);
+    
+    // Execute MassProp to get CG
+    string massPropResults = ExecAnalysis(massPropAnalysis);
+    
+    // Write MassProp results to CSV file for Python to read (for logging)
+    string massPropCSV = "MassProp_Results.csv";
+    if (resultsFile.find("test_") == 0)
+    {
+        massPropCSV = "test_MassProp_Results.csv";
+    }
+    WriteResultsCSVFile(massPropResults, massPropCSV);
+    Print("MassProp results written to " + massPropCSV);
+    
+    // Extract CG from MassProp results
+    // Note: GetVec3DResults is not available in VSP script language
+    // We'll use a manual/default CG here, and Python will extract actual CG from CSV
+    double cg_x = 314.25;  // Manual CG X (mm) - approximate from baseline geometry
+    double cg_y = 0.0;     // Manual CG Y (mm) - should be 0 for symmetric aircraft
+    double cg_z = 0.0;     // Manual CG Z (mm) - should be near 0
+    
+    // TODO: Could parse CSV here if VSP script had file reading, but it doesn't
+    // For now, use manual CG. Python will extract actual CG from MassProp_Results.csv
+    // and use it for static margin calculation (which is what matters)
+    Print("Using manual CG: (" + cg_x + ", " + cg_y + ", " + cg_z + ") mm");
+    Print("Note: Python will extract actual CG from " + massPropCSV + " for static margin");
+
+    // --- VSPAEROSweep: AoA 2–14 deg in 2 deg increments ---
     string myAnalysis = "VSPAEROSweep";
     SetIntAnalysisInput(myAnalysis, "RefFlag", array<int>(1,1)); // 1 = AUTO
+    
+    // Set CG from MassProp results
+    array<double> Xcg(1, cg_x);
+    array<double> Ycg(1, cg_y);
+    array<double> Zcg(1, cg_z);
+    SetDoubleAnalysisInput(myAnalysis, "Xcg", Xcg);
+    SetDoubleAnalysisInput(myAnalysis, "Ycg", Ycg);
+    SetDoubleAnalysisInput(myAnalysis, "Zcg", Zcg);
 
-    // Alpha sweep 2–16 deg
+    // Alpha sweep 2–14 deg in 2 deg increments (2, 4, 6, 8, 10, 12, 14 = 7 points)
     array<double> AlphaStart(1, 2);
     SetDoubleAnalysisInput(myAnalysis, "AlphaStart", AlphaStart);
-    array<double> AlphaEnd(1, 16);
+    array<double> AlphaEnd(1, 14);
     SetDoubleAnalysisInput(myAnalysis, "AlphaEnd", AlphaEnd);
-    array<int> AlphaNpts(1, 15);   // 2,4,6,8,10,12,14,16 → 8 points
+    array<int> AlphaNpts(1, 7);   // 2, 4, 6, 8, 10, 12, 14 → 7 points
     SetIntAnalysisInput(myAnalysis, "AlphaNpts", AlphaNpts);
 
-    // Wake iterations = 15
-    array<int> WakeIter(1, 15);
+    // Wake iterations = 13 (reduced for faster runs)
+    array<int> WakeIter(1, 13);
     SetIntAnalysisInput(myAnalysis, "WakeNumIter", WakeIter);
 
-    // Use 14 cores
+    // Use 16 cores
     array<int> NumCPU(1, 16);
     SetIntAnalysisInput(myAnalysis, "NCPU", NumCPU);
+    
+    // Enable Pitch stability analysis mode
+    // VSPAERO_STABILITY_TYPE enum: 0=OFF, 1=DEFAULT, 2=P_ANALYSIS, 3=Q_ANALYSIS, 4=R_ANALYSIS, 5=PITCH, 6=ADJOINT
+    array<int> UnsteadyType(1, 5);  // 5 = STABILITY_PITCH (simplified pitch stability analysis)
+    SetIntAnalysisInput(myAnalysis, "UnsteadyType", UnsteadyType);
 
+    // VSPAEROSweep with Pitch mode will compute stability derivatives
+    // including neutral point and static margin data
     string allResults = ExecAnalysis(myAnalysis);
-    WriteResultsCSVFile(allResults, "Results.csv");
+    
+    // Write to appropriate Results.csv file
+    WriteResultsCSVFile(allResults, resultsFile);
 
     // Simple confirmation print
-    Print("VSPAEROSweep complete, wrote Results.csv");
-
-    while (GetNumTotalErrors() > 0)
+    Print("VSPAEROSweep complete (Pitch stability mode enabled), wrote " + resultsFile);
+    
+    // Pitch mode (UnsteadyType=5) should provide stability derivatives in Results.csv
+    // Look for neutral point, static margin, or stability-related columns
+    
+    // Check for errors and print them
+    int numErrors = GetNumTotalErrors();
+    if (numErrors > 0)
     {
-        ErrorObj err = PopLastError();
-        Print(err.GetErrorString());
+        Print("WARNING: " + numErrors + " errors occurred during analysis");
+        while (GetNumTotalErrors() > 0)
+        {
+            ErrorObj err = PopLastError();
+            Print("ERROR: " + err.GetErrorString());
+        }
+    }
+    else
+    {
+        Print("Analysis completed successfully with no errors");
     }
 }

@@ -1,0 +1,50 @@
+void main()
+{
+    // Clear any existing model
+    ClearVSPModel();
+    
+    // Read baseline geometry
+    ReadVSPFile("baseline.vsp3");
+    
+    // Read and apply design parameters from .des file
+    // Try current.des first, then test_current.des for test runs
+    string desFile = "current.des";
+    string outputFile = "current.vsp3";
+    
+    // Try to read current.des, if it fails, try test_current.des
+    // OpenVSP doesn't have FileExists, so we use try-catch
+    try
+    {
+        ReadApplyDESFile("current.des");
+        desFile = "current.des";
+        outputFile = "current.vsp3";
+        Print("Applied design parameters from: current.des");
+    }
+    catch
+    {
+        try
+        {
+            ReadApplyDESFile("test_current.des");
+            desFile = "test_current.des";
+            outputFile = "test_current.vsp3";
+            Print("Applied design parameters from: test_current.des");
+        }
+        catch
+        {
+            Print("WARNING: No .des file found (current.des or test_current.des)");
+            Print("Using baseline geometry without modifications");
+        }
+    }
+    
+    // Save updated geometry
+    // WriteVSPFile requires (filename, set) where set is typically 0
+    WriteVSPFile(outputFile, 0);
+    Print("Saved updated geometry to: " + outputFile);
+    
+    // Check for errors
+    while (GetNumTotalErrors() > 0)
+    {
+        ErrorObj err = PopLastError();
+        Print(err.GetErrorString());
+    }
+}
