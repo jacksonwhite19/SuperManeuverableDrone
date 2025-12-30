@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>3D Model Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            overflow: hidden;
+        }
+        .viewer-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+        #viewer {
+            width: 100%;
+            height: 100%;
+        }
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            z-index: 100;
+        }
+        .btn {
+            background: #1f6feb;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 4px;
+        }
+        .btn:hover {
+            background: #58a6ff;
+        }
+        .btn:disabled {
+            background: #30363d;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 12px;
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .error {
+            color: #f85149;
+        }
+        .success {
+            color: #3fb950;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+    <script>
+        // Simple inline OrbitControls
+        THREE.OrbitControls = function(camera, domElement) {
+            this.camera = camera;
+            this.domElement = domElement;
+            this.enableDamping = false;
+            this.dampingFactor = 0.05;
+            this.target = new THREE.Vector3(); // Make target accessible
+            
+            let isMouseDown = false;
+            let lastMouseX = 0;
+            let lastMouseY = 0;
+            let spherical = new THREE.Spherical();
+            let target = this.target; // Use the public target
+            
+            const update = () => {
+                const offset = new THREE.Vector3();
+                offset.setFromSpherical(spherical);
+                this.camera.position.copy(target).add(offset);
+                this.camera.lookAt(target);
+            };
+            
+            this.update = update;
+            
+            domElement.addEventListener('mousedown', (e) => {
+                isMouseDown = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            });
+            
+            domElement.addEventListener('mousemove', (e) => {
+                if (!isMouseDown) return;
+                const dx = e.clientX - lastMouseX;
+                const dy = e.clientY - lastMouseY;
+                
+                spherical.theta -= dx * 0.01;
+                spherical.phi += dy * 0.01;
+                spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
+                
+                update();
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            });
+            
+            domElement.addEventListener('mouseup', () => {
+                isMouseDown = false;
+            });
+            
+            domElement.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                spherical.radius += e.deltaY * 0.1;
+                spherical.radius = Math.max(10, Math.min(2000, spherical.radius));
+                update();
+            });
+            
+            // Initialize
+            const offset = new THREE.Vector3().subVectors(this.camera.position, target);
+            spherical.setFromVector3(offset);
+            update();
+        };
+        
+        // Simple inline STL Loader
+        THREE.STLLoader = function() {};
+        
+        THREE.STLLoader.prototype.load = function(url, onLoad, onProgress, onError) {
+            const scope = this;
+            const loader = new THREE.FileLoader();
+            loader.setResponseType('arraybuffer');
+            
+            loader.load(
+                url,
+                function(buffer) {
+                    try {
+                        const geometry = scope.parse(buffer);
+                        if (onLoad) onLoad(geometry);
+                    } catch (e) {
+                        if (onError) onError(e);
+                        console.error('STL parse error:', e);
+                    }
+                },
+                onProgress,
+                onError
+            );
+        };
+        
+        THREE.STLLoader.prototype.parse = function(buffer) {
+            const geometry = new THREE.BufferGeometry();
+            const vertices = [];
+            const normals = [];
+            
+            // Check if ASCII or binary STL
+            const textDecoder = new TextDecoder();
+            const header = textDecoder.decode(new Uint8Array(buffer, 0, 80));
+            const isASCII = header.trim().startsWith('solid');
+            
+            if (isASCII) {
+                // Parse ASCII STL
+                const text = textDecoder.decode(buffer);
+                const lines = text.split('\n');
+                let currentNormal = new THREE.Vector3();
+                
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    if (line.startsWith('facet normal')) {
+                        const parts = line.split(/\s+/);
+                        currentNormal.set(
+                            parseFloat(parts[2]),
+                            parseFloat(parts[3]),
+                            parseFloat(parts[4])
+                        );
+                    } else if (line.startsWith('vertex')) {
+                        const parts = line.split(/\s+/);
+                        const x = parseFloat(parts[1]);
+                        const y = parseFloat(parts[2]);
+                        const z = parseFloat(parts[3]);
+                        vertices.push(x, y, z);
+                        normals.push(currentNormal.x, currentNormal.y, currentNormal.z);
+                    }
+                }
+            } else {
+                // Parse binary STL
+                const dataView = new DataView(buffer);
+                const faces = dataView.getUint32(80, true);
+                
+                if (80 + 4 + faces * 50 > buffer.byteLength) {
+                    throw new Error('Invalid STL file: file too short');
+                }
+                
+                let offset = 84;
+                for (let i = 0; i < faces; i++) {
+                    // Normal (3 floats, 12 bytes)
+                    const nx = dataView.getFloat32(offset, true);
+                    const ny = dataView.getFloat32(offset + 4, true);
+                    const nz = dataView.getFloat32(offset + 8, true);
+                    offset += 12;
+                    
+                    // Three vertices (3 floats each, 12 bytes each)
+                    for (let j = 0; j < 3; j++) {
+                        if (offset + 12 > buffer.byteLength) {
+                            throw new Error('Invalid STL file: unexpected end');
+                        }
+                        const x = dataView.getFloat32(offset, true);
+                        const y = dataView.getFloat32(offset + 4, true);
+                        const z = dataView.getFloat32(offset + 8, true);
+                        offset += 12;
+                        
+                        vertices.push(x, y, z);
+                        normals.push(nx, ny, nz);
+                    }
+                    
+                    // Attribute byte count (2 bytes) - skip it
+                    offset += 2;
+                }
+            }
+            
+            if (vertices.length === 0) {
+                throw new Error('STL file appears to be empty');
+            }
+            
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+            
+            return geometry;
+        };
+        
+        // Initialize when ready
+        window.addEventListener('load', function() {
+            if (typeof init === 'function') {
+                init();
+            }
+        });
+    </script>
+</head>
+<body>
+    <div class="viewer-container">
+        <div id="viewer"></div>
+        <div class="controls">
+            <button class="btn" onclick="loadModel()">Load Current Model</button>
+            <button class="btn" onclick="resetView()">Reset View</button>
+            <div class="status" id="status">Loading 3D viewer...</div>
+        </div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, controls, model;
+        let viewerInitialized = false;
+        
+        function init() {
+            if (viewerInitialized) return;
+            
+            // STLLoader should be available (we defined it inline)
+            if (typeof THREE === 'undefined' || typeof THREE.STLLoader === 'undefined') {
+                console.error('THREE.js or STLLoader not available');
+                updateStatus('Error: 3D library not loaded. Please refresh the page.', 'error');
+                return;
+            }
+            
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0d1117);
+            
+            // Camera
+            // Increased far plane to prevent clipping
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+            camera.position.set(500, 500, -500); // Positive X, negative Z for front-left iso view
+            camera.lookAt(0, 0, 0);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('viewer').appendChild(renderer.domElement);
+            
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight1.position.set(1, 1, 1);
+            scene.add(directionalLight1);
+            
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
+            directionalLight2.position.set(-1, -1, -1);
+            scene.add(directionalLight2);
+            
+            // Grid helper - removed per user request
+            // const gridHelper = new THREE.GridHelper(1000, 20, 0x30363d, 0x21262d);
+            // scene.add(gridHelper);
+            
+            // Axes helper
+            const axesHelper = new THREE.AxesHelper(200);
+            scene.add(axesHelper);
+            
+            // Animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }
+            animate();
+            
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+            
+            viewerInitialized = true;
+            updateStatus('Ready to load model', '');
+        }
+        
+        // Try to initialize when page loads (if scripts already loaded)
+        window.addEventListener('load', function() {
+            if (typeof THREE !== 'undefined' && typeof THREE.STLLoader !== 'undefined') {
+                init();
+            }
+        });
+        
+        function updateStatus(message, type = '') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = 'status ' + type;
+        }
+        
+        async function loadModel() {
+            updateStatus('Converting VSP3 to STL...', '');
+            
+            try {
+                // Request conversion
+                const response = await fetch('/convert_vsp3?file=current.vsp3');
+                const data = await response.json();
+                
+                if (!data.success) {
+                    updateStatus('Error: ' + (data.error || 'Unknown error'), 'error');
+                    console.error('Conversion error:', data);
+                    return;
+                }
+                
+                updateStatus('Loading STL model...', '');
+                
+                // Load STL file using our inline STLLoader
+                const loader = new THREE.STLLoader();
+                loader.load(
+                    '/current.stl',
+                    function(geometry) {
+                        // Remove old model if exists
+                        if (model) {
+                            scene.remove(model);
+                            model.geometry.dispose();
+                            model.material.dispose();
+                        }
+                        
+                        // Center geometry
+                        geometry.center();
+                        
+                        // Fix orientation (OpenVSP uses different coordinate system)
+                        // Rotate -90 degrees around X-axis to fix pitch (nose up)
+                        geometry.rotateX(-Math.PI / 2);
+                        // Rotate -90 degrees around Y-axis to show front-left view
+                        geometry.rotateY(-Math.PI / 2);
+                        
+                        // Compute normals for smooth shading
+                        geometry.computeVertexNormals();
+                        
+                        // Create material
+                        const material = new THREE.MeshPhongMaterial({
+                            color: 0x58a6ff,
+                            specular: 0x111111,
+                            shininess: 200,
+                            flatShading: false
+                        });
+                        
+                        // Create mesh
+                        model = new THREE.Mesh(geometry, material);
+                        scene.add(model);
+                        
+                        // Fit camera to model with extra margin to prevent clipping
+                        const box = new THREE.Box3().setFromObject(model);
+                        const center = box.getCenter(new THREE.Vector3());
+                        const size = box.getSize(new THREE.Vector3());
+                        const maxDim = Math.max(size.x, size.y, size.z);
+                        const fov = camera.fov * (Math.PI / 180);
+                        // Increase multiplier from 1.5 to 2.5 to add more margin
+                        const cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+                        camera.position.set(center.x, center.y, center.z + cameraZ * 2.5);
+                        camera.lookAt(center);
+                        controls.target.copy(center);
+                        controls.update();
+                        
+                        updateStatus('Model loaded successfully', 'success');
+                    },
+                    function(xhr) {
+                        const percent = (xhr.loaded / xhr.total) * 100;
+                        updateStatus(`Loading: ${percent.toFixed(0)}%`, '');
+                    },
+                    function(error) {
+                        updateStatus('Error loading STL: ' + error, 'error');
+                    }
+                );
+            } catch (error) {
+                updateStatus('Error: ' + error.message, 'error');
+            }
+        }
+        
+        function resetView() {
+            if (model) {
+                const box = new THREE.Box3().setFromObject(model);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const fov = camera.fov * (Math.PI / 180);
+                // Increase multiplier from 1.5 to 2.5 to add more margin
+                const cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+                camera.position.set(center.x, center.y, center.z + cameraZ * 2.5);
+                camera.lookAt(center);
+                controls.target.copy(center);
+                controls.update();
+            }
+        }
+        
+        // Initialize on load
+        init();
+    </script>
+</body>
+</html>
+

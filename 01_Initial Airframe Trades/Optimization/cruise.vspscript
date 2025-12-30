@@ -93,17 +93,18 @@ void main()
     array<int> AlphaNpts(1, 7);   // 2, 4, 6, 8, 10, 12, 14 → 7 points
     SetIntAnalysisInput(myAnalysis, "AlphaNpts", AlphaNpts);
 
-    // Wake iterations = 13 (reduced for faster runs)
-    array<int> WakeIter(1, 13);
+    // Wake iterations = 10 (reduced further for faster runs - was 13, but 23+ min is too slow)
+    array<int> WakeIter(1, 10);
     SetIntAnalysisInput(myAnalysis, "WakeNumIter", WakeIter);
 
     // Use 16 cores
     array<int> NumCPU(1, 16);
     SetIntAnalysisInput(myAnalysis, "NCPU", NumCPU);
     
-    // Enable Pitch stability analysis mode
+    // DISABLE Pitch stability analysis mode for Tier 1 (cheap cruise analysis)
+    // Pitch stability will be run separately in Tier 2 (pitch_stability.vspscript) only for promising designs
     // VSPAERO_STABILITY_TYPE enum: 0=OFF, 1=DEFAULT, 2=P_ANALYSIS, 3=Q_ANALYSIS, 4=R_ANALYSIS, 5=PITCH, 6=ADJOINT
-    array<int> UnsteadyType(1, 5);  // 5 = STABILITY_PITCH (simplified pitch stability analysis)
+    array<int> UnsteadyType(1, 0);  // 0 = STABILITY_OFF (no stability analysis - faster)
     SetIntAnalysisInput(myAnalysis, "UnsteadyType", UnsteadyType);
 
     // VSPAEROSweep with Pitch mode will compute stability derivatives

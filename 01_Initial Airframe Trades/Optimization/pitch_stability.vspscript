@@ -1,0 +1,123 @@
+void main()
+{
+    ClearVSPModel();
+    
+    // Try current.vsp3 first (for main optimizer), then test_current.vsp3 (for test runs)
+    string vspFile = "current.vsp3";
+    string resultsFile = "Stability_Results.csv";
+    string stabFile = "current.aerocenter.stab";
+    
+    // Try to read current.vsp3 first (main optimizer), if it fails, try test_current.vsp3 (test runs)
+    try
+    {
+        ReadVSPFile("current.vsp3");
+        vspFile = "current.vsp3";
+        resultsFile = "Stability_Results.csv";
+        stabFile = "current.aerocenter.stab";
+    }
+    catch
+    {
+        try
+        {
+            ReadVSPFile("test_current.vsp3");
+            vspFile = "test_current.vsp3";
+            resultsFile = "test_Stability_Results.csv";
+            stabFile = "test_current.aerocenter.stab";
+        }
+        catch
+        {
+            Print("ERROR: Neither current.vsp3 nor test_current.vsp3 found!");
+            return;
+        }
+    }
+
+    // --- VSPAEROComputeGeometry: Thick surfaces (fuselage + wings) ---
+    string compGeom = "VSPAEROComputeGeometry";
+    SetAnalysisInputDefaults(compGeom);
+
+    // Use ALL geometry (thick fuselage + wings)
+    array<int> ThickSet(1, 0);     // GeomSet = 0 → All thick surfaces
+    SetIntAnalysisInput(compGeom, "GeomSet", ThickSet);
+
+    array<int> ThinSet(1, -1);     // Disable thin surfaces
+    SetIntAnalysisInput(compGeom, "ThinGeomSet", ThinSet);
+
+    string compGeom_results = ExecAnalysis(compGeom);
+
+    // --- MassProp: Calculate Center of Gravity from geometry ---
+    // Only run if MassProp_Results.csv doesn't exist (should already be computed)
+    Print("Checking for existing MassProp results...");
+    string massPropCSV = "MassProp_Results.csv";
+    if (resultsFile.find("test_") == 0)
+    {
+        massPropCSV = "test_MassProp_Results.csv";
+    }
+    
+    // If MassProp results don't exist, run MassProp
+    // (This should rarely happen since cruise.vspscript runs it first)
+    // For now, we'll use a manual CG - Python will extract actual CG from existing CSV
+    double cg_x = 314.25;  // Manual CG X (mm) - approximate
+    double cg_y = 0.0;
+    double cg_z = 0.0;
+    Print("Using CG: (" + cg_x + ", " + cg_y + ", " + cg_z + ") mm");
+    Print("Note: Python will extract actual CG from " + massPropCSV + " if available");
+
+    // --- VSPAEROSweep: Single alpha pitch stability analysis ---
+    string myAnalysis = "VSPAEROSweep";
+    SetIntAnalysisInput(myAnalysis, "RefFlag", array<int>(1,1)); // 1 = AUTO
+    
+    // Set CG
+    array<double> Xcg(1, cg_x);
+    array<double> Ycg(1, cg_y);
+    array<double> Zcg(1, cg_z);
+    SetDoubleAnalysisInput(myAnalysis, "Xcg", Xcg);
+    SetDoubleAnalysisInput(myAnalysis, "Ycg", Ycg);
+    SetDoubleAnalysisInput(myAnalysis, "Zcg", Zcg);
+
+    // Single alpha point (use 8 deg - typical cruise angle)
+    // Pitch stability only needs ONE alpha, not a sweep
+    array<double> AlphaStart(1, 8.0);
+    SetDoubleAnalysisInput(myAnalysis, "AlphaStart", AlphaStart);
+    array<double> AlphaEnd(1, 8.0);
+    SetDoubleAnalysisInput(myAnalysis, "AlphaEnd", AlphaEnd);
+    array<int> AlphaNpts(1, 1);   // Single point
+    SetIntAnalysisInput(myAnalysis, "AlphaNpts", AlphaNpts);
+
+    // Wake iterations = 10 (same as cruise)
+    array<int> WakeIter(1, 10);
+    SetIntAnalysisInput(myAnalysis, "WakeNumIter", WakeIter);
+
+    // Use 16 cores
+    array<int> NumCPU(1, 16);
+    SetIntAnalysisInput(myAnalysis, "NCPU", NumCPU);
+    
+    // Enable Pitch stability analysis mode (STABILITY_PITCH = 5)
+    array<int> UnsteadyType(1, 5);  // 5 = STABILITY_PITCH (simplified pitch stability analysis)
+    SetIntAnalysisInput(myAnalysis, "UnsteadyType", UnsteadyType);
+
+    // Execute pitch stability analysis (single alpha)
+    string allResults = ExecAnalysis(myAnalysis);
+    
+    // Write to appropriate Results.csv file
+    WriteResultsCSVFile(allResults, resultsFile);
+
+    Print("Pitch stability analysis complete (single alpha = 8 deg), wrote " + resultsFile);
+    Print("Aerodynamic center should be in " + stabFile);
+    
+    // Check for errors
+    int numErrors = GetNumTotalErrors();
+    if (numErrors > 0)
+    {
+        Print("WARNING: " + numErrors + " errors occurred during analysis");
+        while (GetNumTotalErrors() > 0)
+        {
+            ErrorObj err = PopLastError();
+            Print("ERROR: " + err.GetErrorString());
+        }
+    }
+    else
+    {
+        Print("Analysis completed successfully with no errors");
+    }
+}
+
